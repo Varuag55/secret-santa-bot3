@@ -1,145 +1,168 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 import logging
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes
+)
 import random
 
-# =======================
-# 🛠 Налаштування логів
-# =======================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# ---------------------------
+# НАЛАШТУВАННЯ
+# ---------------------------
+ORGANIZER_ID = @Varyag_Drift  # <<< ВСТАВ СЮДИ СВІЙ TELEGRAM ID !!! 
 
-logger = logging.getLogger(__name__)
+FUNNY_NAMES = [
+     "МаксімУм", "СвєтОфор", "ЛізАрдія", "КрісТаЛіна", "ОлЕГОСКОП",
+    "МіЛаванда", "КатЮпітер", "СофиТрон", "ДіАнтиквар", "ЛєнОрион",
+    "ЛеонідОС", "НаталІнка", "АняМальна", "ЖєкаМотор", "ЛіЛюкс", "АльБінГалактика"
+]
 
-# =======================
-# 👤 Користувацькі дані
-# =======================
-participants = {}  # {user_id: {"name": str, "telegram": str}}
-admin_id = 123456789  # Вкажи свій Telegram ID тут
+registered_users = {}      # user_id → funny_name
+matched_pairs = {}         # funny_name → funny_name
+already_drawn = False      # щоб не запускали рулетку 20 разів
 
-# =======================
-# 🎨 Кнопки для користувача
-# =======================
-user_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🎁 Хочу знати КОМУ я дарую")],
-        [KeyboardButton(text="📜 Правила (простими словами)")],
-        [KeyboardButton(text="☎️ Зв’язатися з Організатором")],
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
+logging.basicConfig(level=logging.INFO)
 
-# =======================
-# 🎨 Кнопки для адміністратора
-# =======================
-admin_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="👀 Хто вже зареєстрований")],
-        [KeyboardButton(text="🎰 Запустити КОСМІЧНУ рулетку")],
-        [KeyboardButton(text="➕ Додати людину без Telegram")],
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
 
-# =======================
-# 🚀 Команди
-# =======================
-def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    if user_id == admin_id:
-        update.message.reply_text(
-            "Привіт, космічний адмін! 👽 Ось твоє меню:",
-            reply_markup=admin_keyboard
+# ---------------------------
+# START
+# ---------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=f"choose_{name}")]
+        for name in FUNNY_NAMES
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "✨ *Ласкаво просимо до Космічного Секретного Санти!* ✨\n\n"
+        "Сьогодні Всесвіт вирішив, що саме ти обраний для участі "
+        "у священному розподілі подарунків родини, яка п’є Jagermeister, "
+        "грає в мафію і шукає сенс життя десь між Bitcoin і фільмом *Interstellar*.\n\n"
+        "Оберіть себе зі списку смішних імен нижче 👇",
+        parse_mode="Markdown",
+        reply_markup=reply_markup
+    )
+
+
+# ---------------------------
+# ВИБІР ІМЕНІ
+# ---------------------------
+async def choose_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global already_drawn
+
+    query = update.callback_query
+    await query.answer()
+
+    name = query.data.replace("choose_", "")
+    user_id = query.from_user.id
+
+    # Записуємо вибір
+    registered_users[user_id] = name
+
+    await query.edit_message_text(
+        f"🚀 *Вітаю, {name}!* Твоє космічне ім'я збережено!\n\n"
+        "Тепер чекаємо на інших учасників з нашої родини "
+        "галактики Чумацького Шляху… 🌌",
+        parse_mode="Markdown"
+    )
+
+    # Якщо всі вибралися — повідомити організатора
+    if len(registered_users) == len(FUNNY_NAMES):
+        await context.bot.send_message(
+            ORGANIZER_ID,
+            "🛎 *Всі учасники зареєструвалися!*\n\n"
+            "Настав момент, коли доля, випадковість і Jagermeister "
+            "зливаються в одному акті — *натисни /draw щоб запустити рулетку!*",
+            parse_mode="Markdown"
         )
-    else:
-        update.message.reply_text(
-            "Привіт! 🌟 Ласкаво просимо до анонімного обміну подарунками! 🎁",
-            reply_markup=user_keyboard
+
+
+# ---------------------------
+# РУЛЕТКА
+# ---------------------------
+async def draw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global already_drawn, matched_pairs
+
+    if update.effective_user.id != ORGANIZER_ID:
+        await update.message.reply_text("🚫 Тільки Верховний Організатор може запускати рулетку.")
+        return
+
+    if len(registered_users) < len(FUNNY_NAMES):
+        await update.message.reply_text("⏳ Ще не всі вибрали свої смішні імена!")
+        return
+
+    # Стартуємо нову рулетку
+    already_drawn = True
+    matched_pairs = {}
+
+    names = list(registered_users.values())
+    shuffled = names.copy()
+
+    # Гарантовано різні отримувачі
+    while True:
+        random.shuffle(shuffled)
+        if all(a != b for a, b in zip(names, shuffled)):
+            break
+
+    # Формуємо пари
+    for giver, receiver in zip(names, shuffled):
+        matched_pairs[giver] = receiver
+
+    # Розсилка всім
+    for uid, funny_name in registered_users.items():
+        await context.bot.send_message(
+            uid,
+            f"🎁 *Космічна Рулетка подарунків завершена!*\n\n"
+            f"Ти, *{funny_name}*, даруєш подарунок герою:\n\n"
+            f"✨ **{matched_pairs[funny_name]}** ✨\n\n"
+            "Пам’ятай: Всесвіт стежить за тобою 👁",
+            parse_mode="Markdown"
         )
 
-def handle_message(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    text = update.message.text
+    await update.message.reply_text("🌠 Розподіл успішно завершено! Всесвіт аплодує стоячи.")
 
-    # =======================
-    # Адмін: хто зареєстрований
-    # =======================
-    if user_id == admin_id:
-        if text == "👀 Хто вже зареєстрований":
-            if participants:
-                msg = "Зареєстровані учасники:\n"
-                for p in participants.values():
-                    msg += f"- {p['name']} ({p['telegram']})\n"
-                update.message.reply_text(msg)
-            else:
-                update.message.reply_text("Ніхто ще не зареєстрований 😢")
-        elif text == "🎰 Запустити КОСМІЧНУ рулетку":
-            if len(participants) < 2:
-                update.message.reply_text("Потрібно мінімум 2 учасники для рулетки 🪐")
-                return
-            users = list(participants.keys())
-            random.shuffle(users)
-            mapping = {}
-            for i in range(len(users)):
-                giver = users[i]
-                receiver = users[(i + 1) % len(users)]
-                mapping[giver] = receiver
-            msg = "🪐 Рулетка запущена! Всі учасники отримали свій таємний подарунок.\n"
-            update.message.reply_text(msg)
-            # надсилаємо кожному їхню пару
-            for giver_id, receiver_id in mapping.items():
-                context.bot.send_message(
-                    chat_id=giver_id,
-                    text=f"🎁 Твій отримувач: {participants[receiver_id]['name']}"
-                )
-        elif text == "➕ Додати людину без Telegram":
-            update.message.reply_text("Напиши ім'я та контакт (наприклад, Vika, +380123456789)")
-    else:
-        # =======================
-        # Користувачі
-        # =======================
-        if text == "🎁 Хочу знати КОМУ я дарую":
-            update.message.reply_text("Твоє таємне призначення з'явиться після запуску рулетки 🪐")
-        elif text == "📜 Правила (простими словами)":
-            update.message.reply_text(
-                "Прості правила:\n"
-                "1. Підтверджуй свою участь\n"
-                "2. Підготуй подарунок\n"
-                "3. Після запуску рулетки дізнаєшся, кому даруєш 🎁"
-            )
-        elif text == "☎️ Зв’язатися з Організатором":
-            update.message.reply_text("Напиши організатору: @YourTelegramName")
-        else:
-            # зберігаємо учасника
-            if user_id not in participants:
-                participants[user_id] = {
-                    "name": update.effective_user.first_name,
-                    "telegram": update.effective_user.username or "немає"
-                }
-                update.message.reply_text("Ти зареєстрований! 🌟", reply_markup=user_keyboard)
-            else:
-                update.message.reply_text("👍")
 
-# =======================
-# 🏁 Головна функція
-# =======================
+# ---------------------------
+# RESET
+# ---------------------------
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global registered_users, matched_pairs, already_drawn
+    if update.effective_user.id != ORGANIZER_ID:
+        await update.message.reply_text("Тільки Бог Розподілу (ти) може робити reset.")
+        return
+
+    registered_users = {}
+    matched_pairs = {}
+    already_drawn = False
+
+    await update.message.reply_text(
+        "🔄 *Космічний цикл перезапущено!*\n\n"
+        "Учасники можуть почати реєстрацію заново.\n"
+        "Bitcoin зросте. Сенс життя знайдеться. Все буде добре.",
+        parse_mode="Markdown"
+    )
+
+
+# ---------------------------
+# MAIN
+# ---------------------------
 def main():
-    TOKEN = "8450052650:AAF-40XOduhQ6HVIC-b2l8-SZp0CzH7G6Ko"  # <- Встав свій токен
-    updater = Updater(TOKEN)
+    app = ApplicationBuilder().token("8450052650:AAF-40XOduhQ6HVIC-b2l8-SZp0CzH7G6Ko").build()
 
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("draw", draw))
+    app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CallbackQueryHandler(choose_name))
 
-    updater.start_polling()
-    updater.idle()
+    app.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
